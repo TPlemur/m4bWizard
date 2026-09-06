@@ -13,6 +13,7 @@ export LC_NUMERIC=C
 AUDIO_OPTIONS=("Single File" "Folder of Files" "Exit")
 AUDIO_EXTS=(".m4b" ".mp3" ".m4a" ".wav" ".opus" ".ogg" ".mp4" ".aif" ".flac" ".alac" ".wma" ".webm" ".amr" ".aiff")
 CURRENT_OPTIONS=("${AUDIO_OPTIONS[@]}")
+SELECT_HEADER=("Arrow keys to navigate, Enter to select")
 SELECTED=0
 PROMPT_RESPONSE=""
 
@@ -66,7 +67,7 @@ draw_menu() {
 	echo "             /       |[__]|     N             | |\/| | || |_|  _ \   \ \ /\ / /| |_  / _\` | '__/ _\` | "
 	echo '   _________/________|[__]|______N________    | |  | |__   _| |_) |   \ V  V / | |/ / (_| | | | (_| | '
 	echo '   \_____________________________________/    |_|  |_|  |_| |____/     \_/\_/  |_/___\__,_|_|  \__,_| '
-    echo '                                                                                               v1.0.1 '
+    echo '                                                                                               v1.0.2 '
 	echo '======================================================================================================'
 
 	#clear leftover space
@@ -86,6 +87,7 @@ select_menu(){
     #run the select
     while true; do
         draw_menu
+        printf '%b\n' "$SELECT_HEADER"
         #Render options
         for i in "${!CURRENT_OPTIONS[@]}"; do
             if [ "$i" -eq "$SELECTED" ]; then
@@ -134,6 +136,7 @@ select_menu(){
 prompt_menu(){
     clear
     draw_menu
+    
     printf '%b\n' "$1"
     IFS= read -e PROMPT_RESPONSE
     
@@ -150,6 +153,15 @@ prompt_menu(){
     fi
 
 }
+
+#remove any temp files created during the process
+cleanup(){
+    rm "$FILEDIR"/m4bWizTempMetadata.txt
+    if ! $SINGLE_FILE; then
+        rm "$FILEDIR"/m4bWizTempFiles.txt
+    fi
+}
+
 
 
 #######################################
@@ -507,6 +519,48 @@ for i in "${!CH_NAMES[@]}"; do
     printf '%s\n' "title=${CH_NAMES[i]}" >> "$FILEDIR"/m4bWizTempMetadata.txt
 done
 
+#######################################
+#
+#Confirm everything is correct
+#
+#######################################
+
+CURRENT_OPTIONS=("Confirm" "Exit")
+
+#confirm source audio
+if $SINGLE_FILE; then
+    SELECT_HEADER=("Please confirm the following information is correct before proceeding\nAudio Source: $FILEPATH")
+else
+    TempString=$(<"$FILEDIR"/m4bWizTempFiles.txt)
+    SELECT_HEADER=("Please confirm the following information is correct before proceeding\nAudio Sources: \n$TempString")
+
+fi
+select_menu
+if SELECTED = 1; then
+    echo "Goodbye!"; cleanup; exit 0
+fi
+
+#confirm metadata
+
+TempString=$(<"$FILEDIR"/m4bWizTempMetadata.txt)
+SELECT_HEADER=("Please confirm the following information is correct before proceeding\nAudio Sources: \n$TempString")
+select_menu
+if SELECTED = 1; then
+    echo "Goodbye!"; cleanup; exit 0
+fi
+
+
+#confirm image
+if $IMAGEFILE = "";
+    SELECT_HEADER=('Please confirm the following information is correct before proceeding\nNo Cover Image')
+else
+    SELECT_HEADER=('Please confirm the following information is correct before proceeding\nImage file: $IMAGEFILE')
+fi
+select_menu
+if SELECTED = 1; then
+    echo "Goodbye!"; cleanup; exit 0
+fi
+
 
 #######################################
 #
@@ -537,7 +591,4 @@ fi
 #
 #######################################
 
-rm "$FILEDIR"/m4bWizTempMetadata.txt
-if ! $SINGLE_FILE; then
-    rm "$FILEDIR"/m4bWizTempFiles.txt
-fi
+cleanup
