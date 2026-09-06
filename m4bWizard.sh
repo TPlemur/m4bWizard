@@ -551,7 +551,7 @@ fi
 
 
 #confirm image
-if $IMAGEFILE = "";
+if $IMAGEFILE = ""; then
     SELECT_HEADER=('Please confirm the following information is correct before proceeding\nNo Cover Image')
 else
     SELECT_HEADER=('Please confirm the following information is correct before proceeding\nImage file: $IMAGEFILE')
@@ -567,7 +567,7 @@ fi
 #Assemble m4b
 #
 #######################################
-
+ then
 
 #run the ffmpeg command to assemble the file
 if $SINGLE_FILE; then
