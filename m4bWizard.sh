@@ -536,7 +536,7 @@ else
 
 fi
 select_menu
-if SELECTED = 1; then
+if ((SELECTED == 1)); then
     echo "Goodbye!"; cleanup; exit 0
 fi
 
@@ -545,19 +545,19 @@ fi
 TempString=$(<"$FILEDIR"/m4bWizTempMetadata.txt)
 SELECT_HEADER=("Please confirm the following information is correct before proceeding\nAudio Sources: \n$TempString")
 select_menu
-if SELECTED = 1; then
+if ((SELECTED == 1)); then
     echo "Goodbye!"; cleanup; exit 0
 fi
 
 
 #confirm image
-if $IMAGEFILE = ""; then
+if [[ $IMAGEFILE == "" ]]; then
     SELECT_HEADER=('Please confirm the following information is correct before proceeding\nNo Cover Image')
 else
-    SELECT_HEADER=('Please confirm the following information is correct before proceeding\nImage file: $IMAGEFILE')
+    SELECT_HEADER=("Please confirm the following information is correct before proceeding\nImage file: $IMAGEFILE")
 fi
 select_menu
-if SELECTED = 1; then
+if ((SELECTED == 1)); then
     echo "Goodbye!"; cleanup; exit 0
 fi
 
