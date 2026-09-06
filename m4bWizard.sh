@@ -66,6 +66,7 @@ draw_menu() {
 	echo "             /       |[__]|     N             | |\/| | || |_|  _ \   \ \ /\ / /| |_  / _\` | '__/ _\` | "
 	echo '   _________/________|[__]|______N________    | |  | |__   _| |_) |   \ V  V / | |/ / (_| | | | (_| | '
 	echo '   \_____________________________________/    |_|  |_|  |_| |____/     \_/\_/  |_/___\__,_|_|  \__,_| '
+    echo '                                                                                               v1.0.1 '
 	echo '======================================================================================================'
 
 	#clear leftover space
@@ -450,14 +451,19 @@ rm "$FILEDIR"/m4bWizTemp.txt
 #
 #######################################
 
-prompt_menu "Path to cover image:" "f"
-IMAGEFILE=$PROMPT_RESPONSE
+CURRENT_OPTIONS=("Select Cover Image" "No Cover Image")
+select_menu
+case $SELECTED in
+    0)  prompt_menu "Path to cover image:" "f"
+        IMAGEFILE=$PROMPT_RESPONSE;;
+    1)  IMAGEFILE="";;
+esac
 
 
 
 #######################################
 #
-#Assemble m4b
+#Assemble metadata file
 #
 #######################################
 
@@ -502,12 +508,36 @@ for i in "${!CH_NAMES[@]}"; do
 done
 
 
+#######################################
+#
+#Assemble m4b
+#
+#######################################
+
+
 #run the ffmpeg command to assemble the file
 if $SINGLE_FILE; then
-    ffmpeg -i "$FILEPATH" -f ffmetadata -i "$FILEDIR"/m4bWizTempMetadata.txt -i "$IMAGEFILE" -map 0:a:0 -map_metadata 1 -map 2 -c:a aac -c:v copy -disposition:v:0 attached_pic -metadata:s:v title="Cover" -metadata:s:v comment="Cover (front)" "$FILEDIR"/"$ALBUM".m4b
+    if $IMAGEFILE = ""; then
+        ffmpeg -i "$FILEPATH" -f ffmetadata -i "$FILEDIR"/m4bWizTempMetadata.txt -map 0:a:0 -map_metadata 1 -c:a aac "$FILEDIR"/"$ALBUM".m4b
+    else
+        ffmpeg -i "$FILEPATH" -f ffmetadata -i "$FILEDIR"/m4bWizTempMetadata.txt -i "$IMAGEFILE" -map 0:a:0 -map_metadata 1 -map 2 -c:a aac -c:v copy -disposition:v:0 attached_pic -metadata:s:v title="Cover" -metadata:s:v comment="Cover (front)" "$FILEDIR"/"$ALBUM".m4b
+    fi
 else
-    ffmpeg -f concat -safe 0 -i "$FILEDIR"/m4bWizTempFiles.txt -f ffmetadata -i "$FILEDIR"/m4bWizTempMetadata.txt -i "$IMAGEFILE" -map 0:a:0 -map_metadata 1 -map 2 -c:a aac -c:v copy -disposition:v:0 attached_pic -metadata:s:v title="Cover" -metadata:s:v comment="Cover (front)" "$FILEDIR"/"$ALBUM".m4b
+    if $IMAGEFILE = ""; then
+        ffmpeg -f concat -safe 0 -i "$FILEDIR"/m4bWizTempFiles.txt -f ffmetadata -i "$FILEDIR"/m4bWizTempMetadata.txt -map 0:a:0 -map_metadata 1 -c:a aac "$FILEDIR"/"$ALBUM".m4b
+    else
+        ffmpeg -f concat -safe 0 -i "$FILEDIR"/m4bWizTempFiles.txt -f ffmetadata -i "$FILEDIR"/m4bWizTempMetadata.txt -i "$IMAGEFILE" -map 0:a:0 -map_metadata 1 -map 2 -c:a aac -c:v copy -disposition:v:0 attached_pic -metadata:s:v title="Cover" -metadata:s:v comment="Cover (front)" "$FILEDIR"/"$ALBUM".m4b
+    fi
 fi
 
+
+#######################################
+#
+#Cleanup temp files
+#
+#######################################
+
 rm "$FILEDIR"/m4bWizTempMetadata.txt
-rm "$FILEDIR"/m4bWizTempFiles.txt
+if ! $SINGLE_FILE; then
+    rm "$FILEDIR"/m4bWizTempFiles.txt
+fi
