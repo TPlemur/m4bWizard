@@ -67,7 +67,7 @@ draw_menu() {
 	echo "             /       |[__]|     N             | |\/| | || |_|  _ \   \ \ /\ / /| |_  / _\` | '__/ _\` | "
 	echo '   _________/________|[__]|______N________    | |  | |__   _| |_) |   \ V  V / | |/ / (_| | | | (_| | '
 	echo '   \_____________________________________/    |_|  |_|  |_| |____/     \_/\_/  |_/___\__,_|_|  \__,_| '
-    echo '                                                                                               v2.0.0 '
+    echo '                                                                                               v2.0.1 '
 	echo '======================================================================================================'
 
 	#clear leftover space
@@ -485,6 +485,9 @@ edit_chapters(){
 get_cover(){
     prompt_menu "Path to cover image (leave blank for no cover):" "c"
     IMAGEFILE="$PROMPT_RESPONSE"
+    if [ "$IMAGEFILE" = "" ]; then
+        image_Selected=false
+    fi
 }
 
 
