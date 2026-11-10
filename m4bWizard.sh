@@ -67,7 +67,7 @@ draw_menu() {
 	echo "             /       |[__]|     N             | |\/| | || |_|  _ \   \ \ /\ / /| |_  / _\` | '__/ _\` | "
 	echo '   _________/________|[__]|______N________    | |  | |__   _| |_) |   \ V  V / | |/ / (_| | | | (_| | '
 	echo '   \_____________________________________/    |_|  |_|  |_| |____/     \_/\_/  |_/___\__,_|_|  \__,_| '
-    echo '                                                                                               v2.0.1 '
+    echo '                                                                                               v2.0.2 '
 	echo '======================================================================================================'
 
 	#clear leftover space
@@ -140,7 +140,7 @@ prompt_menu(){
     printf '%b\n' "$1"
     IFS= read -e PROMPT_RESPONSE
     
-    if [[ "$2" = "d" || "$2" = "f" ]]; then
+    if [[ "$2" = "d" || "$2" = "f" || "$2" = "c" ]]; then
         PROMPT_RESPONSE="$(echo -e "${PROMPT_RESPONSE}" | sed -e 's/[[:space:]]*$//')"
     fi
     #flags "d" and "f" force a valid directory or file path
