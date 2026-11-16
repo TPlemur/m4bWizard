@@ -22,6 +22,7 @@ SINGLE_FILE=true
 FILEPATH=""
 FILEDIR=""
 FILEEXT=""
+OUTPUT_FILE=""
 IMAGEFILE=""
 
 #Metadata vars
@@ -36,6 +37,11 @@ TIMEBASE="1/1000"
 CH_NAMES=()
 CH_TIMES=()
 
+#flags to track which steps have been completed
+audio_Selected=false
+metadata_Selected=false
+chapters_Selected=false
+image_Selected=false
 
 
 #ANSI Escape Codes for Styling
@@ -67,7 +73,7 @@ draw_menu() {
 	echo "             /       |[__]|     N             | |\/| | || |_|  _ \   \ \ /\ / /| |_  / _\` | '__/ _\` | "
 	echo '   _________/________|[__]|______N________    | |  | |__   _| |_) |   \ V  V / | |/ / (_| | | | (_| | '
 	echo '   \_____________________________________/    |_|  |_|  |_| |____/     \_/\_/  |_/___\__,_|_|  \__,_| '
-    echo '                                                                                               v2.0.2 '
+    echo '                                                                                               v2.1.2 '
 	echo '======================================================================================================'
 
 	#clear leftover space
@@ -78,8 +84,7 @@ draw_menu() {
 
 #main wizard loop
 select_menu(){
-    #hide cursor during select
-    trap 'tput cnorm; clear; exit' INT TERM EXIT
+    #hide cursor during select (the exit trap near the top of the script restores it)
     tput civis
     clear
     SELECTED=0
@@ -141,7 +146,10 @@ prompt_menu(){
     IFS= read -e PROMPT_RESPONSE
     
     if [[ "$2" = "d" || "$2" = "f" || "$2" = "c" ]]; then
-        PROMPT_RESPONSE="$(echo -e "${PROMPT_RESPONSE}" | sed -e 's/[[:space:]]*$//')"
+        #trim trailing spaces (printf, not echo -e, so backslashes in the path survive)
+        PROMPT_RESPONSE="$(printf '%s' "$PROMPT_RESPONSE" | sed -e 's/[[:space:]]*$//')"
+        #expand a typed leading ~ to the home folder
+        PROMPT_RESPONSE="${PROMPT_RESPONSE/#\~/$HOME}"
     fi
     #flags "d" and "f" force a valid directory or file path
     if [ "$2" = "d" ] && [ ! -d "$PROMPT_RESPONSE" ]; then
@@ -160,9 +168,39 @@ prompt_menu(){
 cleanup(){
     [ -z "$FILEDIR" ] && return
     rm -f "$FILEDIR"/m4bWizTempMetadata.txt
-    if ! $SINGLE_FILE; then
-        rm -f "$FILEDIR"/m4bWizTempFiles.txt
+    rm -f "$FILEDIR"/m4bWizTempCover.jpg
+    rm -f "$FILEDIR"/m4bWizTempFiles.txt
+    rm -f "$FILEDIR"/m4bWizTemp.txt
+}
+
+#Escape / unescape text for the ffmetadata format ( = ; # and \ must be backslash-escaped )
+ff_escape(){
+    printf '%s' "$1" | sed -e 's/[\\=;#]/\\&/g'
+}
+ff_unescape(){
+    printf '%s' "$1" | sed -e 's/\\\(.\)/\1/g'
+}
+
+#Concat-list helpers. Single quotes in file names are written as '\'' (the concat demuxer's escape)
+concat_line(){
+    local esc
+    esc=$(printf '%s' "$1" | sed "s/'/'\\\\''/g")
+    printf "file '%s'\n" "$esc"
+}
+concat_path(){
+    local p="${1#file \'}"
+    p="${p%\'}"
+    printf '%s' "$p" | sed "s/'\\\\''/'/g"
+}
+
+#Reports when no audio source has been chosen yet. Usage: require_audio || return
+require_audio(){
+    if [ -z "$FILEDIR" ]; then
+        echo "Please select an audio source first."
+        sleep 2
+        return 1
     fi
+    return 0
 }
 
 
@@ -172,12 +210,19 @@ cleanup(){
 #
 #######################################
 
-#Check for FFMPEG
-if ! command -v "ffmpeg" &> /dev/null; then
-    draw_menu
-    echo "Error: ffmpeg not installed"
-    exit 1
-fi
+#Check for FFMPEG and FFPROBE
+for tool in ffmpeg ffprobe; do
+    if ! command -v "$tool" &> /dev/null; then
+        draw_menu
+        echo "Error: $tool not installed"
+        exit 1
+    fi
+done
+
+#Restore the cursor and remove temp files however the script ends (including Ctrl-C).
+#Deliberately no "clear" here, so the final messages stay on screen.
+trap 'tput cnorm; cleanup' EXIT
+trap 'exit 130' INT TERM
 
 
 
@@ -192,29 +237,56 @@ select_audio(){
     SELECT_HEADER=("Arrow keys to navigate, Enter to select")
     select_menu
 
+    #drop temp files from any previously selected source (and a cover stripped from it)
+    cleanup
+    if [[ "$IMAGEFILE" == */m4bWizTempCover.jpg ]]; then
+        IMAGEFILE=""
+        image_Selected=false
+    fi
+    FILEDIR=""
+    audio_Selected=false
+
     # Get All the audio file info
     case $SELECTED in
-        0)  prompt_menu "Please enter the audio file" "f"
+        0)  SINGLE_FILE=true
+            prompt_menu "Please enter the audio file" "f"
             FILEPATH="$(cd "$(dirname "$PROMPT_RESPONSE")" && pwd)/$(basename "$PROMPT_RESPONSE")"
             FILEDIR="$(dirname "$FILEPATH")"
-            ffmpeg -i "$FILEPATH" -f ffmetadata "$FILEDIR"/m4bWizTempMetadata.txt #scan audio for metadata
+            #scan audio for metadata
+            ffmpeg -v error -y -nostdin -i "$FILEPATH" -f ffmetadata "$FILEDIR"/m4bWizTempMetadata.txt
             ;;
-        1)  SINGLE_FILE=false;
-            prompt_menu "Please enter the audio folder" "d"; FILEPATH=$PROMPT_RESPONSE
+        1)  SINGLE_FILE=false
+            prompt_menu "Please enter the audio folder" "d"
             FILEDIR="$(cd "$PROMPT_RESPONSE" && pwd)"
             FILEPATH="$FILEDIR"
-            
+
             CURRENT_OPTIONS=("${AUDIO_EXTS[@]}")
-            select_menu;
+            select_menu
             FILEEXT="${AUDIO_EXTS[$SELECTED]}"
-            
+
             allFiles=("$FILEPATH"/*"$FILEEXT")
-            FILEDIR="$FILEPATH"
-            for f in "${allFiles[@]}"; do echo "file '$f'"; done > "$FILEDIR"/m4bWizTempFiles.txt
-            ffmpeg -i "${allFiles[0]}" -f ffmetadata "$FILEDIR"/m4bWizTempMetadata.txt #scan audio for metadata
+            if [ ! -e "${allFiles[0]}" ]; then
+                #the glob matched nothing, so allFiles[0] is just the literal pattern
+                echo "No $FILEEXT files found in $FILEPATH"
+                sleep 2
+                FILEDIR=""
+                return 1
+            fi
+            for f in "${allFiles[@]}"; do concat_line "$f"; done > "$FILEDIR"/m4bWizTempFiles.txt
+            #scan the first file for metadata
+            ffmpeg -v error -y -nostdin -i "${allFiles[0]}" -f ffmetadata "$FILEDIR"/m4bWizTempMetadata.txt
             ;;
     esac
-}         
+
+    if [ ! -s "$FILEDIR"/m4bWizTempMetadata.txt ]; then
+        echo "ffmpeg could not read that audio."
+        sleep 2
+        cleanup
+        FILEDIR=""
+        return 1
+    fi
+    audio_Selected=true
+}
 
 #######################################
 #
@@ -222,24 +294,47 @@ select_audio(){
 #
 #######################################
 
+#helper - first value of a tag in the global section of the scanned metadata file, with
+#ffmetadata escapes removed. A value that continues onto the next line (the line ends in a
+#backslash) is joined into one line with a space.
+get_tag(){
+    local v
+    v=$(awk -v key="$1=" '
+        /^\[/ { exit }
+        index($0, key) == 1 {
+            v = substr($0, length(key) + 1)
+            while (v ~ /\\$/) {
+                sub(/\\$/, "", v)
+                if ((getline nxt) <= 0) break
+                v = v " " nxt
+            }
+            print v
+            exit
+        }
+    ' "$FILEDIR"/m4bWizTempMetadata.txt)
+    ff_unescape "$v"
+}
+
 edit_metadata(){
+    require_audio || return
+
     #Find metadata in file
-    ALBUM=$(grep "^album=" "$FILEDIR"/m4bWizTempMetadata.txt)
-    ALBUM="${ALBUM#album=}"
-    ARTIST=$(grep "^artist=" "$FILEDIR"/m4bWizTempMetadata.txt)
-    ARTIST="${ARTIST#artist=}"
-    COMPOSER=$(grep "^composer=" "$FILEDIR"/m4bWizTempMetadata.txt)
-    COMPOSER="${COMPOSER#composer=}"
-    COMMENT=$(grep "^comment=" "$FILEDIR"/m4bWizTempMetadata.txt)
-    COMMENT="${COMMENT#comment=}"
-    DATE=$(grep "^date=" "$FILEDIR"/m4bWizTempMetadata.txt)
-    DATE="${DATE#date=}"
-    GENRE=$(grep "^genre=" "$FILEDIR"/m4bWizTempMetadata.txt)
-    GENRE="${GENRE#genre=}"
+    ALBUM=$(get_tag album)
+    ARTIST=$(get_tag artist)
+    COMPOSER=$(get_tag composer)
+    COMMENT=$(get_tag comment)
+    DATE=$(get_tag date)
+    GENRE=$(get_tag genre)
+    #everything else in the global section. Continuation lines (a line ending in a backslash)
+    #belong to the tag above them, so they are dropped together with the tags handled above.
     OTHER=$(awk '
         /;FFMETADATA1/ { inrange=1; next }
-        /\[CHAPTER\]/  { inrange=0 }
-        inrange && !/^(encoder|album|artist|composer|comment|date|genre)=/ { print }
+        /^\[/          { inrange=0 }
+        inrange {
+            if (!cont) { skip = ($0 ~ /^(encoder|album|artist|composer|comment|date|genre)=/) }
+            if (!skip) { print }
+            cont = ($0 ~ /\\$/)
+        }
     ' "$FILEDIR"/m4bWizTempMetadata.txt)
 
     #read chapters if any
@@ -250,7 +345,7 @@ edit_metadata(){
         case "$line" in
             T:*) [ -z "$TIMEBASE" ] && TIMEBASE="${line#T:}" ;;   # keep only the first one found
             S:*) CH_TIMES+=("${line#S:START=}") ;;
-            N:*) CH_NAMES+=("${line#N:title=}") ;;
+            N:*) CH_NAMES+=("$(ff_unescape "${line#N:title=}")") ;;
         esac
     done < <(awk '
         /^\[CHAPTER\]/ { in_chapter = 1; next }
@@ -279,6 +374,7 @@ edit_metadata(){
             7) break;;
         esac
     done
+    metadata_Selected=true
 }
 
 #######################################
@@ -379,51 +475,58 @@ read_chapters(){
     done < "$file"
 }
 
+#helper function - duration of a file in whole TIMEBASE ticks. Usage: file_ticks "<path>" <denominator>
+file_ticks(){
+    local dur_sec
+    dur_sec=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$1" </dev/null)
+    awk -v d="$dur_sec" -v tb="$2" 'BEGIN { printf "%d", d * tb }'
+}
+
 #helper function to generate chapters list based on files
 read_file_titles(){
-    accumulated_time=0
+    local accumulated_time=0
+    local ch_number=1
+    local raw_line filepath name dur_ticks example_name lead_drop trail_drop
     CH_NAMES=()
     CH_TIMES=()
     TIMEBASE="TIMEBASE=1/1000"
     local denominator="${TIMEBASE#*/}"
     CURRENT_OPTIONS=("Name Chapters Sequentially" "Name Chapters based on file names")
     select_menu
- 
+
     case $SELECTED in
         0)  prompt_menu "Chapter number prefix (suggested is Chapter: )"
-            ch_number=1;
             while IFS= read -r raw_line; do
-                filepath="${raw_line#file \'}"
-                filepath="${filepath%\'}"
-                dur_sec=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$filepath")
-                dur_ticks=$(awk -v d="$dur_sec" -v tb="$denominator" 'BEGIN { printf "%d", d * tb }')
+                filepath=$(concat_path "$raw_line")
+                dur_ticks=$(file_ticks "$filepath" "$denominator")
                 CH_NAMES+=("${PROMPT_RESPONSE}${ch_number}")
                 CH_TIMES+=("$accumulated_time")
                 accumulated_time=$(( accumulated_time + dur_ticks ))
                 ch_number=$(( ch_number + 1 ))
             done < "$FILEDIR"/m4bWizTempFiles.txt;;
-            
-        1)  example_name=$(head -n 1 "$FILEDIR/m4bWizTempFiles.txt")
-            example_name="${example_name#file \'}"
-            example_name="${example_name%\'}"
+
+        1)  #names come from the file name only: no folder path and no extension
+            example_name=$(concat_path "$(head -n 1 "$FILEDIR/m4bWizTempFiles.txt")")
+            example_name="${example_name##*/}"
+            example_name="${example_name%$FILEEXT}"
             prompt_menu "drop how many characters from the start of: $example_name" "num"
             lead_drop=$PROMPT_RESPONSE
             prompt_menu "drop how many characters from the end of: $example_name" "num"
             trail_drop=$PROMPT_RESPONSE
             while IFS= read -r raw_line; do
-                filepath="${raw_line#file \'}"
-                filepath="${filepath%\'}"
+                filepath=$(concat_path "$raw_line")
                 # Get duration before modifying the filename.
-                dur_sec=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$filepath")
-                dur_ticks=$(awk -v d="$dur_sec" -v tb="$denominator" 'BEGIN { printf "%d", d * tb }')
+                dur_ticks=$(file_ticks "$filepath" "$denominator")
                 # Apply the requested filename trimming.
-                if [ "$lead_drop" -gt 0 ]; then
-                    filepath="${filepath:$lead_drop}"
+                name="${filepath##*/}"
+                name="${name%$FILEEXT}"
+                if [ "$lead_drop" -gt 0 ] && [ "$lead_drop" -lt "${#name}" ]; then
+                    name="${name:$lead_drop}"
                 fi
-                if [ "$trail_drop" -gt 0 ]; then
-                    filepath="${filepath:0:${#filepath}-$trail_drop}"
+                if [ "$trail_drop" -gt 0 ] && [ "$trail_drop" -lt "${#name}" ]; then
+                    name="${name:0:${#name}-$trail_drop}"
                 fi
-                CH_NAMES+=("$filepath")
+                CH_NAMES+=("$name")
                 CH_TIMES+=("$accumulated_time")
                 accumulated_time=$(( accumulated_time + dur_ticks ))
             done < "$FILEDIR/m4bWizTempFiles.txt" ;;
@@ -432,6 +535,8 @@ read_file_titles(){
 
 #Chapter data source
 edit_chapters(){
+    require_audio || return
+
     if [ "$metadata_Selected" = false ]; then
         CURRENT_OPTIONS=("Check for metadata first (recommended)" "Proceed without checking")
         select_menu
@@ -474,6 +579,7 @@ edit_chapters(){
     nano -w "$FILEDIR"/m4bWizTemp.txt;
     read_chapters "$FILEDIR"/m4bWizTemp.txt
     rm "$FILEDIR"/m4bWizTemp.txt
+    chapters_Selected=true
 }
 
 #######################################
@@ -482,14 +588,42 @@ edit_chapters(){
 #
 #######################################
 
-get_cover(){
+path_cover(){
     prompt_menu "Path to cover image (leave blank for no cover):" "c"
     IMAGEFILE="$PROMPT_RESPONSE"
+    image_Selected=true;
     if [ "$IMAGEFILE" = "" ]; then
         image_Selected=false
     fi
 }
 
+strip_cover(){
+    require_audio || return
+    local src="$FILEPATH" out="$FILEDIR/m4bWizTempCover.jpg"
+    $SINGLE_FILE || src="${allFiles[0]}"
+    rm -f "$out"
+    if ffmpeg -v error -nostdin -y -i "$src" -map 0:v -map -0:V -frames:v 1 -c copy "$out" 2>/dev/null && [ -s "$out" ]; then
+        IMAGEFILE="$out"
+        image_Selected=true
+    else
+        rm -f "$out"
+        IMAGEFILE=""
+        image_Selected=false
+        echo "No embedded cover found."; sleep 2
+    fi
+}
+
+get_cover(){
+    CURRENT_OPTIONS=("Select File" "Strip Cover from Audio" "Skip Cover Selection")
+    SELECT_HEADER=("Arrow keys to navigate, Enter to select")
+    select_menu
+
+    case $SELECTED in
+        0) path_cover ;;
+        1) strip_cover ;;
+        2) IMAGEFILE=""; image_Selected=false ;;
+    esac
+}
 
 #######################################
 #
@@ -501,17 +635,16 @@ get_cover(){
 add_total_duration(){
     local denominator="${TIMEBASE#*/}"
     local duration_seconds=0
-    local filepath file_dur
+    local filepath file_dur raw_line
 
     if $SINGLE_FILE; then
         duration_seconds=$(ffprobe -v error -show_entries format=duration \
-            -of default=noprint_wrappers=1:nokey=1 "$FILEPATH")
+            -of default=noprint_wrappers=1:nokey=1 "$FILEPATH" </dev/null)
     else
         while IFS= read -r raw_line; do
-            filepath="${raw_line#file \'}"
-            filepath="${filepath%\'}"
+            filepath=$(concat_path "$raw_line")
             file_dur=$(ffprobe -v error -show_entries format=duration \
-                -of default=noprint_wrappers=1:nokey=1 "$filepath")
+                -of default=noprint_wrappers=1:nokey=1 "$filepath" </dev/null)
             duration_seconds=$(awk -v total="$duration_seconds" -v d="$file_dur" 'BEGIN { printf "%.6f", total + d }')
         done < "$FILEDIR"/m4bWizTempFiles.txt
     fi
@@ -520,23 +653,27 @@ add_total_duration(){
 }
 
 make_metadata(){
+    local meta="$FILEDIR"/m4bWizTempMetadata.txt
     #put the metadata file back together
-    printf '%s\n' ";FFMETADATA1" > "$FILEDIR"/m4bWizTempMetadata.txt
-    printf '%s\n' "album=$ALBUM" >> "$FILEDIR"/m4bWizTempMetadata.txt
-    printf '%s\n' "artist=$ARTIST" >> "$FILEDIR"/m4bWizTempMetadata.txt
-    printf '%s\n' "composer=$COMPOSER" >> "$FILEDIR"/m4bWizTempMetadata.txt
-    printf '%s\n' "date=$DATE" >> "$FILEDIR"/m4bWizTempMetadata.txt
-    printf '%s\n' "genre=$GENRE" >> "$FILEDIR"/m4bWizTempMetadata.txt
-    printf '%s\n' "comment=$COMMENT" >> "$FILEDIR"/m4bWizTempMetadata.txt
-    printf '%s\n' "$OTHER" >> "$FILEDIR"/m4bWizTempMetadata.txt
+    printf '%s\n' ";FFMETADATA1" > "$meta"
+    printf '%s\n' "album=$(ff_escape "$ALBUM")" >> "$meta"
+    printf '%s\n' "artist=$(ff_escape "$ARTIST")" >> "$meta"
+    printf '%s\n' "composer=$(ff_escape "$COMPOSER")" >> "$meta"
+    printf '%s\n' "date=$(ff_escape "$DATE")" >> "$meta"
+    printf '%s\n' "genre=$(ff_escape "$GENRE")" >> "$meta"
+    printf '%s\n' "comment=$(ff_escape "$COMMENT")" >> "$meta"
+    #OTHER is edited by hand in the ffmetadata format, so it is written as-is
+    printf '%s\n' "$OTHER" >> "$meta"
     add_total_duration
     for i in "${!CH_NAMES[@]}"; do
-        printf '%s\n' "[CHAPTER]" >> "$FILEDIR"/m4bWizTempMetadata.txt
-        printf '%s\n' "$TIMEBASE" >> "$FILEDIR"/m4bWizTempMetadata.txt
-        printf '%s\n' "START=${CH_TIMES[i]}" >> "$FILEDIR"/m4bWizTempMetadata.txt
-        printf '%s\n' "END=$(( CH_TIMES[i+1] - 1 ))" >> "$FILEDIR"/m4bWizTempMetadata.txt
-        printf '%s\n' "title=${CH_NAMES[i]}" >> "$FILEDIR"/m4bWizTempMetadata.txt
+        printf '%s\n' "[CHAPTER]" >> "$meta"
+        printf '%s\n' "$TIMEBASE" >> "$meta"
+        printf '%s\n' "START=${CH_TIMES[i]}" >> "$meta"
+        printf '%s\n' "END=$(( CH_TIMES[i+1] - 1 ))" >> "$meta"
+        printf '%s\n' "title=$(ff_escape "${CH_NAMES[i]}")" >> "$meta"
     done
+    #drop the end-of-book entry again so running this twice can't stack extra ones
+    CH_TIMES=("${CH_TIMES[@]:0:${#CH_NAMES[@]}}")
 }
 
 
@@ -546,28 +683,53 @@ make_metadata(){
 #
 #######################################
 
+#Returns 0 on success, 2 if no audio source is selected, otherwise ffmpeg's exit status.
+#Sets OUTPUT_FILE to the path of the m4b.
 assemble(){
     # return early if no audio source has been selected
     if [ -z "$FILEDIR" ]; then
         echo "Please select an audio source first."
-        return
+        return 2
+    fi
+
+    #pick the output name: title, else the source name. "/" can't appear in a file name.
+    local name="$ALBUM"
+    if [ -z "$name" ]; then
+        if $SINGLE_FILE; then
+            name="${FILEPATH##*/}"
+            name="${name%.*}"
+        else
+            name="${FILEDIR##*/}"
+        fi
+    fi
+    name="${name//\//-}"
+    OUTPUT_FILE="$FILEDIR/$name.m4b"
+    #never write over the source file
+    if [ "$OUTPUT_FILE" = "$FILEPATH" ]; then
+        OUTPUT_FILE="$FILEDIR/$name (audiobook).m4b"
     fi
 
     make_metadata
-    #run the ffmpeg command to assemble the file
+
+    #build the ffmpeg command. -map_chapters 1 makes ffmpeg use the chapters from the
+    #metadata file; without it chapters already inside the source audio win.
+    local -a cmd=(ffmpeg)
     if $SINGLE_FILE; then
-        if [ -z "$IMAGEFILE" ]; then
-            ffmpeg -i "$FILEPATH" -f ffmetadata -i "$FILEDIR"/m4bWizTempMetadata.txt -map 0:a:0 -map_metadata 1 -c:a aac "$FILEDIR"/"$ALBUM".m4b
-        else
-            ffmpeg -i "$FILEPATH" -f ffmetadata -i "$FILEDIR"/m4bWizTempMetadata.txt -i "$IMAGEFILE" -map 0:a:0 -map_metadata 1 -map 2 -c:a aac -c:v copy -disposition:v:0 attached_pic -metadata:s:v title="Cover" -metadata:s:v comment="Cover (front)" "$FILEDIR"/"$ALBUM".m4b
-        fi
+        cmd+=(-i "$FILEPATH")
     else
-        if [ -z "$IMAGEFILE" ]; then
-            ffmpeg -f concat -safe 0 -i "$FILEDIR"/m4bWizTempFiles.txt -f ffmetadata -i "$FILEDIR"/m4bWizTempMetadata.txt -map 0:a:0 -map_metadata 1 -c:a aac "$FILEDIR"/"$ALBUM".m4b
-        else
-            ffmpeg -f concat -safe 0 -i "$FILEDIR"/m4bWizTempFiles.txt -f ffmetadata -i "$FILEDIR"/m4bWizTempMetadata.txt -i "$IMAGEFILE" -map 0:a:0 -map_metadata 1 -map 2 -c:a aac -c:v copy -disposition:v:0 attached_pic -metadata:s:v title="Cover" -metadata:s:v comment="Cover (front)" "$FILEDIR"/"$ALBUM".m4b
-        fi
+        cmd+=(-f concat -safe 0 -i "$FILEDIR"/m4bWizTempFiles.txt)
     fi
+    cmd+=(-f ffmetadata -i "$FILEDIR"/m4bWizTempMetadata.txt)
+    if [ -n "$IMAGEFILE" ]; then
+        cmd+=(-i "$IMAGEFILE")
+    fi
+    cmd+=(-map 0:a:0 -map_metadata 1 -map_chapters 1)
+    if [ -n "$IMAGEFILE" ]; then
+        cmd+=(-map 2 -c:v copy -disposition:v:0 attached_pic -metadata:s:v title="Cover" -metadata:s:v comment="Cover (front)")
+    fi
+    cmd+=(-c:a aac "$OUTPUT_FILE")
+
+    "${cmd[@]}"
 }
 
 
@@ -576,11 +738,6 @@ assemble(){
 #Main Menu
 #
 #######################################
-
-audio_Selected=false
-metadata_Selected=false
-chapters_Selected=false
-image_Selected=false
 
 assemble_Menu_Opts(){
     CURRENT_OPTIONS=()
@@ -614,13 +771,17 @@ while true; do
     SELECT_HEADER=("Arrow keys to navigate, Enter to select Doing thse steps in order is recommended, as some may depend on the previous step. ")
     select_menu
     case $SELECTED in
-        0) audio_Selected=true; select_audio ;;
-        1) metadata_Selected=true; edit_metadata ;;
-        2) chapters_Selected=true; edit_chapters ;;
-        3) image_Selected=true; get_cover ;;
-        4) assemble; echo "Done!"; cleanup; exit 0;;
-        5) echo "Goodbye!"; cleanup; exit 0 ;;
+        0) select_audio ;;
+        1) edit_metadata ;;
+        2) edit_chapters ;;
+        3) get_cover ;;
+        4) assemble
+           if [ $? -eq 0 ]; then
+               echo "Done! Saved to: $OUTPUT_FILE"
+               exit 0
+           fi
+           echo "The m4b was not created (see the messages above)."
+           read -rp "Press Enter to return to the menu..." _ ;;
+        5) echo "Goodbye!"; exit 0 ;;
     esac
 done
-
-
