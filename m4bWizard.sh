@@ -1,5 +1,12 @@
 #!/bin/bash
 
+VERSION="2.1.3"
+case "$1" in
+    -v|--version) echo "m4bWizard $VERSION"; exit 0 ;;
+    -h|--help)    echo "Usage: m4bwizard   (interactive; needs ffmpeg and ffprobe)"; exit 0 ;;
+esac
+
+
 #make sure language is correct
 export LC_NUMERIC=C
 
@@ -73,7 +80,7 @@ draw_menu() {
 	echo "             /       |[__]|     N             | |\/| | || |_|  _ \   \ \ /\ / /| |_  / _\` | '__/ _\` | "
 	echo '   _________/________|[__]|______N________    | |  | |__   _| |_) |   \ V  V / | |/ / (_| | | | (_| | '
 	echo '   \_____________________________________/    |_|  |_|  |_| |____/     \_/\_/  |_/___\__,_|_|  \__,_| '
-    echo '                                                                                               v2.1.2 '
+	printf '%101s \n' "v$VERSION"
 	echo '======================================================================================================'
 
 	#clear leftover space
